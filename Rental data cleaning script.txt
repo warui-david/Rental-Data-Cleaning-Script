@@ -1,0 +1,166 @@
+﻿function processTenantData() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var tenantSheet = ss.getSheetByName("tenant_directory");
+  var rentSheet = ss.getSheetByName("rent_roll");
+
+
+  if (!tenantSheet || !rentSheet) {
+    SpreadsheetApp.getUi().alert("Missing required sheets: tenant_directory or rent_roll");
+    return;
+  }
+
+
+  var tenantData = tenantSheet.getDataRange().getValues();
+  var rentData = rentSheet.getDataRange().getValues();
+
+
+  var headers = tenantData[0];
+  var emailIndex = headers.indexOf("tenant_email");
+  var firstNameIndex = headers.indexOf("tenant_first_name");
+  var lastNameIndex = headers.indexOf("tenant_last_name");
+  var rentDueIndex = headers.indexOf("rent_due_day_of_month");
+  var leaseStartIndex = headers.indexOf("lease_start_date");
+  var leaseEndIndex = headers.indexOf("lease_end_date");
+  var rentAmountIndex = headers.indexOf("rent_amount");
+  var balanceIndex = headers.indexOf("outstanding_balance");
+  var dobIndex = headers.indexOf("dob");
+  var phoneIndex = headers.indexOf("phone_number");
+
+
+  var rentHeaders = rentData[0];
+  var rentLeaseStartIndex = rentHeaders.indexOf("lease_start_date");
+  var rentLeaseEndIndex = rentHeaders.indexOf("lease_end_date");
+  var rentAmountIndexRentRoll = rentHeaders.indexOf("rent_amount");
+  var pastDueIndex = rentHeaders.indexOf("past_due");
+
+
+  var rentLookup = {};
+  for (var j = 1; j < rentData.length; j++) {
+    var key = rentData[j][rentLeaseStartIndex] + "|" + rentData[j][rentLeaseEndIndex] + "|" + rentData[j][rentAmountIndexRentRoll];
+    rentLookup[key] = rentData[j][pastDueIndex] || 0;
+  }
+
+
+  var noEmailSheet = ss.getSheetByName("no email") || ss.insertSheet("no email");
+  var noLeaseSheet = ss.getSheetByName("no lease from") || ss.insertSheet("no lease from");
+  var piiSheet = ss.getSheetByName("PII") || ss.insertSheet("PII");
+
+
+  var cleanedData = [headers];
+  var noEmailData = [headers];
+  var noLeaseData = [headers];
+  var piiData = [["first_name", "last_name", "email", "ssn", "dob"]];
+
+
+  for (var i = 1; i < tenantData.length; i++) {
+    var row = tenantData[i];
+
+
+    // Clean email
+    row[emailIndex] = row[emailIndex].toString().split(/[;,]/)[0].trim();
+    if (!row[emailIndex]) {
+      noEmailData.push(row);
+      continue;
+    }
+
+
+    // Clean and format names
+    row[firstNameIndex] = toProperCase(row[firstNameIndex]);
+    row[lastNameIndex] = toProperCase(row[lastNameIndex]);
+
+
+    // Clean phone number
+    row[phoneIndex] = cleanPhoneNumber(row[phoneIndex]);
+
+
+    // Clean rent_due_day_of_month
+    if (!row[rentDueIndex]) row[rentDueIndex] = 1;
+
+
+    // Handle missing lease_start_date
+    if (!row[leaseStartIndex]) {
+      if (row[leaseEndIndex]) {
+        var endDate = new Date(row[leaseEndIndex]);
+        var startDate = new Date(endDate);
+        startDate.setDate(startDate.getDate() - 364);
+        row[leaseStartIndex] = Utilities.formatDate(startDate, ss.getSpreadsheetTimeZone(), "MM/dd/yyyy");
+      } else {
+        noLeaseData.push(row);
+        continue;
+      }
+    }
+
+
+    // Clean rent_amount
+    row[rentAmountIndex] = Math.max(100, Math.min(15000, row[rentAmountIndex] || 0));
+
+
+    // Handle outstanding balance
+    if (row[balanceIndex] !== "" && row[balanceIndex] !== null && !isNaN(row[balanceIndex])) {
+      if (row[balanceIndex] > 0) {
+        row[balanceIndex] = 100;
+      } else if (row[balanceIndex] < 0) {
+        row[balanceIndex] = 0;
+      }
+    } else {
+      // No existing balance, fallback to lookup
+      var lookupKey = row[leaseStartIndex] + "|" + row[leaseEndIndex] + "|" + row[rentAmountIndex];
+      row[balanceIndex] = rentLookup[lookupKey] !== undefined ? rentLookup[lookupKey] : 0;
+
+
+      if (row[balanceIndex] < 0) row[balanceIndex] = 0;
+      else if (row[balanceIndex] > 0) row[balanceIndex] = 100;
+    }
+
+
+    // Add to PII tab with Proper Case formatting
+    if (row[dobIndex]) {
+      piiData.push([
+        toProperCase(row[firstNameIndex]),
+        toProperCase(row[lastNameIndex]),
+        row[emailIndex],
+        "",
+        row[dobIndex]
+      ]);
+    }
+
+
+    cleanedData.push(row);
+  }
+
+
+  // Update sheets
+  tenantSheet.clear();
+  tenantSheet.getRange(1, 1, cleanedData.length, cleanedData[0].length).setValues(cleanedData);
+  noEmailSheet.clear();
+  noEmailSheet.getRange(1, 1, noEmailData.length, noEmailData[0].length).setValues(noEmailData);
+  noLeaseSheet.clear();
+  noLeaseSheet.getRange(1, 1, noLeaseData.length, noLeaseData[0].length).setValues(noLeaseData);
+  piiSheet.clear();
+  piiSheet.getRange(1, 1, piiData.length, piiData[0].length).setValues(piiData);
+
+
+  // Remove dob from tenant_directory
+  tenantSheet.deleteColumn(dobIndex + 1);
+
+
+
+
+  // Delete any empty rows after the last data row
+  var lastRow = tenantSheet.getLastRow();
+  var maxRows = tenantSheet.getMaxRows();
+  if (lastRow < maxRows) {
+    tenantSheet.deleteRows(lastRow + 1, maxRows - lastRow);
+  }
+}
+function toProperCase(str) {
+  return str.toString()
+    .toLowerCase()
+    .replace(/[.,'’`'"()*&`#']/g,!- "") // Remove special characters
+    .replace(/\b\w/g, c => c.toUpperCase()); // Capitalize words
+}
+
+
+function cleanPhoneNumber(phone) {
+  return phone.toString().split(/[;,]/)[0].replace(/(Mobile:|Phone:|Office:|Home:)/gi, "").trim();
+}
